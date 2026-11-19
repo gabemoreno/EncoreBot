@@ -1,33 +1,43 @@
+/** Room names are fixed by application code, never by a Discord member. */
+export type RoomConfig = {
+  readonly triggerChannelId: string;
+  readonly categoryId: string;
+  readonly namePrefix: "Backstage" | "Stage";
+};
+
 /** Choose the first unused exact name in the target category. */
-export function getNextBackstageName(
+export function getNextRoomName(
   channels: readonly { name: string; parentId: string | null }[],
-  categoryId: string,
+  room: Pick<RoomConfig, "categoryId" | "namePrefix">,
 ): string {
   const existingNames = new Set(
     channels
-      .filter((channel) => channel.parentId === categoryId)
+      .filter((channel) => channel.parentId === room.categoryId)
       .map((channel) => channel.name),
   );
 
   // Exact comparisons deliberately ignore malformed names and leading zeros.
   let number = 1;
-  while (existingNames.has(`Backstage ${number}`)) number += 1;
+  while (existingNames.has(`${room.namePrefix} ${number}`)) number += 1;
 
-  return `Backstage ${number}`;
+  return `${room.namePrefix} ${number}`;
 }
 
-export function shouldCreateTempChannel(
+export function getRoomForJoin(
   transition: {
     guildId: string;
     oldChannelId: string | null;
     newChannelId: string | null;
   },
-  config: { guildId: string; joinToCreateChannelId: string },
-): boolean {
-  return (
-    transition.guildId === config.guildId &&
-    transition.newChannelId === config.joinToCreateChannelId &&
-    transition.oldChannelId !== transition.newChannelId
+  config: { guildId: string; rooms: readonly RoomConfig[] },
+): RoomConfig | undefined {
+  if (
+    transition.guildId !== config.guildId ||
+    transition.oldChannelId === transition.newChannelId
+  )
+    return undefined;
+  return config.rooms.find(
+    (room) => room.triggerChannelId === transition.newChannelId,
   );
 }
 
@@ -35,10 +45,10 @@ export function shouldCreateTempChannel(
 export function shouldDeleteTempChannel(
   channel: { id: string; memberCount: number },
   trackedChannelIds: ReadonlySet<string>,
-  joinToCreateChannelId: string,
+  triggerChannelIds: ReadonlySet<string>,
 ): boolean {
   return (
-    channel.id !== joinToCreateChannelId &&
+    !triggerChannelIds.has(channel.id) &&
     trackedChannelIds.has(channel.id) &&
     channel.memberCount === 0
   );

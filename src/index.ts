@@ -1,8 +1,13 @@
-import { Client, Events } from "discord.js";
-import { readConfig } from "./config.js";
+import { Client, Events, GatewayIntentBits } from "discord.js";
+import { ConfigurationError, readConfig } from "./config.js";
+import {
+  createTempVoiceHandler,
+  validateTempVoiceSetup,
+} from "./temp-voice/handler.js";
 
 let client: Client | undefined;
 let shuttingDown = false;
+let tempVoice: ReturnType<typeof createTempVoiceHandler> | undefined;
 
 async function shutdown() {
   if (shuttingDown) return;
@@ -10,6 +15,7 @@ async function shutdown() {
   console.info("Shutting down Encore.");
 
   try {
+    await tempVoice?.stop();
     await client?.destroy();
   } catch {
     console.error("Discord client shutdown failed.");
@@ -21,16 +27,34 @@ async function shutdown() {
 }
 
 try {
-  const { token } = readConfig(process.env);
-  // Ready is delivered without intents; guild/voice events are not needed yet.
-  client = new Client({ intents: [] });
+  const config = readConfig(process.env);
+  client = new Client({
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
+  });
 
   client.once(Events.ClientReady, (readyClient) => {
-    if (!shuttingDown) {
+    async function initialize() {
+      const guild = await validateTempVoiceSetup(readyClient, config);
+      if (shuttingDown) return;
+      tempVoice = createTempVoiceHandler(guild, config);
+      readyClient.on(Events.VoiceStateUpdate, (oldState, newState) => {
+        void tempVoice?.handle(oldState, newState);
+      });
       console.info(
         `Connected as ${readyClient.user.tag} (${readyClient.user.id}).`,
       );
+      console.info("Temporary voice rooms are ready.");
     }
+    void initialize().catch(async (error: unknown) => {
+      if (shuttingDown) return;
+      console.error(
+        error instanceof ConfigurationError
+          ? error.message
+          : "Unable to initialize temporary voice rooms.",
+      );
+      process.exitCode = 1;
+      await shutdown();
+    });
   });
 
   // Never log raw Discord errors or debug events: they may contain secrets.
@@ -48,11 +72,13 @@ try {
     void shutdown();
   });
 
-  await client.login(token);
-} catch {
+  await client.login(config.token);
+} catch (error) {
   if (!shuttingDown) {
     console.error(
-      "Unable to start Encore. Check DISCORD_TOKEN and network access.",
+      error instanceof ConfigurationError
+        ? error.message
+        : "Unable to start Encore. Check DISCORD_TOKEN and network access.",
     );
     process.exitCode = 1;
     await shutdown();
