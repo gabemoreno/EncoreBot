@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.pnpm-store/
+.env
+.env.*
+.aws/
+.agents/
+.codex/
+pnpm-lock.yaml
