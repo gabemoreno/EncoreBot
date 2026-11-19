@@ -35,6 +35,7 @@ function setup() {
     PermissionFlagsBits.Connect,
     PermissionFlagsBits.ManageChannels,
     PermissionFlagsBits.MoveMembers,
+    PermissionFlagsBits.SetVoiceChannelStatus,
   ]);
   function channel(id: string, name: string, type = ChannelType.GuildVoice) {
     return {
@@ -44,6 +45,7 @@ function setup() {
       parentId: "category",
       guild: { id: "guild" },
       permissionsFor: vi.fn(() => permission),
+      setUserLimit: vi.fn(() => Promise.resolve()),
       delete: vi.fn(() => {
         channels.delete(id);
         return Promise.resolve();
@@ -66,6 +68,7 @@ function setup() {
   function member(id: string, channelId: string | null) {
     const state = {
       channelId,
+      member: { user: { bot: false }, displayName: id },
       setChannel: vi.fn((destination: { id: string }) => {
         state.channelId = destination.id;
         return Promise.resolve();
@@ -90,7 +93,10 @@ function setup() {
   const guild = {
     id: "guild",
     available: true,
-    client: { isReady: () => true },
+    client: {
+      isReady: () => true,
+      rest: { put: vi.fn(() => Promise.resolve()) },
+    },
     channels: { fetch, create },
     voiceStates: { cache: states },
     members: { fetchMe: vi.fn(() => Promise.resolve({ id: "bot" })) },
@@ -107,7 +113,12 @@ function setup() {
     state.channelId = newChannelId;
     return handler.handle(
       { id, channelId: oldChannelId, guild: { id: guildId } } as VoiceState,
-      { id, channelId: newChannelId, guild: { id: guildId } } as VoiceState,
+      {
+        id,
+        channelId: newChannelId,
+        guild: { id: guildId },
+        member: state.member,
+      } as unknown as VoiceState,
     );
   }
   const client = {
@@ -141,6 +152,7 @@ describe("temporary voice lifecycle", () => {
         name: `${setting.namePrefix} 1`,
         type: ChannelType.GuildVoice,
         parent: setting.categoryId,
+        userLimit: 8,
         reason: "Encore temporary voice room",
       });
       expect(f.states.get("alice")!.setChannel).toHaveBeenCalledWith(
@@ -449,4 +461,122 @@ describe("startup validation", () => {
       "Backstage trigger must identify",
     );
   });
+});
+
+describe("Host integration", () => {
+  it("waits for observed creator presence instead of trusting the move response", async () => {
+    const f = setup();
+    f.member("alice", "trigger").setChannel.mockResolvedValueOnce(undefined);
+    await f.transition("alice", null, "trigger");
+    expect(f.handler.inspect("room-1")?.hostId).toBeNull();
+    await f.transition("alice", "trigger", "room-1");
+    expect(f.handler.inspect("room-1")?.hostId).toBe("alice");
+    expect(f.guild.client.rest.put).toHaveBeenLastCalledWith(
+      "/channels/room-1/voice-status",
+      { body: { status: "👑 alice" } },
+    );
+    await f.handler.stop();
+  });
+  it("tracks ordinary arrivals, transfers authority, and leaves names stable", async () => {
+    const f = setup();
+    await f.transition("alice", null, "trigger");
+    await f.transition("bob", null, "room-1");
+    const generation = f.handler.inspect("room-1")!.generation;
+    await f.handler.transfer("room-1", "alice", "bob", generation);
+    await expect(
+      f.handler.resize("room-1", "alice", generation, 4),
+    ).rejects.toThrow();
+    await f.handler.resize("room-1", "bob", generation + 1, 4);
+    expect(f.channels.get("room-1")?.setUserLimit).toHaveBeenCalledWith(
+      4,
+      "Encore normal capacity",
+    );
+    expect(f.channels.get("room-1")?.name).toBe("Backstage 1");
+    await f.transition("bob", "room-1", null);
+    expect(f.handler.inspect("room-1")?.hostId).toBe("alice");
+    const snapshot = f.handler.inspect("room-1")!;
+    snapshot.members.clear();
+    expect(f.handler.inspect("room-1")?.members.size).toBe(1);
+    await f.handler.stop();
+    expect(f.guild.client.rest.put).toHaveBeenLastCalledWith(
+      "/channels/room-1/voice-status",
+      { body: { status: null } },
+    );
+  });
+  it("tombstones an externally deleted room during a status write", async () => {
+    const f = setup();
+    let release!: () => void;
+    f.guild.client.rest.put.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const creation = f.transition("alice", null, "trigger");
+    await vi.waitFor(() =>
+      expect(f.guild.client.rest.put).toHaveBeenCalledOnce(),
+    );
+    f.handler.deleted("room-1");
+    release();
+    await creation;
+    expect(f.handler.inspect("room-1")).toBeUndefined();
+    await expect(
+      f.handler.transfer("room-1", "alice", "bob", 1),
+    ).rejects.toThrow();
+    await f.handler.stop();
+  });
+  it("updates Host immediately while the previous status REST call is pending", async () => {
+    const f = setup();
+    await f.transition("alice", null, "trigger");
+    await f.transition("bob", null, "room-1");
+    await f.transition("carol", null, "room-1");
+    let release!: () => void;
+    f.guild.client.rest.put.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const first = f.transition("alice", "room-1", null);
+    await vi.waitFor(() =>
+      expect(f.guild.client.rest.put).toHaveBeenCalledTimes(2),
+    );
+    const second = f.transition("bob", "room-1", null);
+    expect(f.handler.inspect("room-1")?.hostId).toBe("carol");
+    release();
+    await Promise.all([first, second]);
+    expect(f.guild.client.rest.put).toHaveBeenLastCalledWith(
+      "/channels/room-1/voice-status",
+      { body: { status: "👑 carol" } },
+    );
+    await f.handler.stop();
+  });
+});
+
+it("shutdown drains a deleted room's in-flight status effect", async () => {
+  const f = setup();
+  await f.transition("alice", null, "trigger");
+  await f.transition("bob", null, "room-1");
+  let release!: () => void;
+  f.guild.client.rest.put.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  const transfer = f.handler.transfer("room-1", "alice", "bob", 1);
+  await vi.waitFor(() =>
+    expect(f.guild.client.rest.put).toHaveBeenCalledTimes(2),
+  );
+  f.handler.deleted("room-1");
+  let drained = false;
+  const stop = f.handler.stop().then(() => {
+    drained = true;
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(drained).toBe(false);
+  release();
+  await Promise.all([stop, transfer]);
+  expect(drained).toBe(true);
 });

@@ -40,6 +40,18 @@ try {
       readyClient.on(Events.VoiceStateUpdate, (oldState, newState) => {
         void tempVoice?.handle(oldState, newState);
       });
+      readyClient.on(Events.ChannelDelete, (channel) => {
+        tempVoice?.deleted(channel.id);
+      });
+      readyClient.on(Events.ShardReady, () => {
+        void tempVoice?.resume();
+      });
+      readyClient.on(Events.ShardResume, () => {
+        void tempVoice?.resume();
+      });
+      readyClient.on(Events.GuildAvailable, (guild) => {
+        if (guild.id === config.guildId) void tempVoice?.resume();
+      });
       console.info(
         `Connected as ${readyClient.user.tag} (${readyClient.user.id}).`,
       );
