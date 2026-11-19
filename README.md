@@ -108,6 +108,9 @@ src/
   index.test.ts      Offline startup failure checks
   config.ts          Small environment validation function
   config.test.ts     Configuration unit tests
+  temp-voice/
+    logic.ts         Pure naming, creation, and deletion rules
+    logic.test.ts    Offline tests for temporary voice channel decisions
 eslint.config.mjs    ESLint and TypeScript rules
 tsconfig.json       Shared settings and typechecking
 tsconfig.build.json Application build settings
@@ -132,10 +135,33 @@ Commit `pnpm-lock.yaml` alongside dependency changes. Generated output,
 dependencies, coverage, local environment files, and AWS credentials are ignored.
 Run `pnpm check` and review `git diff` plus untracked files before committing.
 
-## Next milestones
+## Temporary voice channel rules
 
-1. Add pure, tested temporary voice channel decisions.
-2. Connect those decisions to Discord events and channel operations.
+The rules in `src/temp-voice/logic.ts` are implemented and tested, but are not
+connected to Discord events yet. They accept plain values and do not import
+discord.js or read runtime configuration.
+
+- Naming chooses the lowest unused positive `Backstage N` in the supplied
+  category. Only exact names reserve a number: casing, spacing, and decimal
+  digits must match. Names such as `Backstage 01` or `Backstage 1.0` are ignored.
+  Duplicate names reserve a number once; other categories do not affect it.
+  Any exact matching channel name in the category reserves its number, even
+  when that channel is permanent or untracked.
+- Creation requires the configured guild and an actual transition from a
+  different channel (or no channel) into the configured trigger. Other updates
+  do nothing.
+- Deletion requires an ID tracked by the current process and exactly zero
+  members. Names never establish ownership. The trigger is explicitly protected,
+  even if its ID is accidentally included in the tracked set.
+
+The future integration must supply channels from the configured guild, the
+current process's tracked IDs, and current membership counts. These functions
+only decide eligibility; they do not reserve names, track channels, or perform
+Discord operations. Concurrency handling belongs to the integration milestone.
+
+## Next milestone
+
+Connect the tested rules to Discord events and channel operations.
 
 The planned voice feature uses fixed `Backstage N` names and memory-only tracking
 of channels created by the running bot. It will never use a matching name alone
