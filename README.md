@@ -2,10 +2,10 @@
 
 A small TypeScript Discord bot for the Encore karaoke and music community.
 
-This repository currently contains the project foundation: configuration
-validation, linting, formatting, unit tests, and a production build. The entry
-point validates configuration and exits. It does not connect to Discord, create
-channels, or move members.
+The bot validates configuration, connects to Discord, logs its identity when
+ready, and shuts down on SIGINT or SIGTERM. It does not handle commands, create
+channels, or move members. The project includes linting, formatting, unit tests,
+and a production build.
 
 ## Requirements
 
@@ -18,7 +18,7 @@ If you use nvm, run `nvm install` and `nvm use` from this directory.
 
 ```sh
 pnpm install --frozen-lockfile
-cp .env.example .env
+cp -n .env.example .env
 pnpm check
 ```
 
@@ -28,13 +28,31 @@ Set `DISCORD_TOKEN` in your local `.env`, then run:
 pnpm dev
 ```
 
-Until Discord login is implemented, any nonblank placeholder is sufficient to
-exercise startup. No real token is needed for tests, linting, typechecking, or
-building. Successful startup currently prints a configuration confirmation;
-watch mode waits for source changes and reruns the entry point.
+The copy command preserves an existing `.env`. A valid bot token is required to
+connect. Successful startup prints `Connected as <bot tag> (<bot ID>).` and the
+bot stays connected. Watch mode restarts it after source changes. Press Ctrl+C
+to stop it; both SIGINT and SIGTERM destroy the Discord client before exiting.
+
+No real token is needed for tests, linting, typechecking, or building. Startup
+tests run in child processes with missing or blank tokens and do not load `.env`
+or connect to Discord.
 
 Development will use a private test Discord server with the existing Discord
 application. A separate development application can be considered later.
+
+Install the existing application into that server as a bot if it is not already
+there. This milestone needs no channel permissions, Administrator permission, or
+slash-command registration. Keep privileged intents disabled in the Developer
+Portal. The client uses `intents: []`: the ready event does not require an intent.
+Guild and voice-state intents will be added only with the voice feature.
+
+If startup fails, the process exits with code 1 and asks you to check
+`DISCORD_TOKEN` and network access. Confirm that the token belongs to your bot and
+has not been reset, and that Discord is reachable. Error messages deliberately
+omit raw Discord errors, request details, and stack traces to protect the token.
+Client/connection error events also produce fixed messages; discord.js handles
+ordinary connection recovery. Shutdown errors exit with code 1; normal signal
+shutdown exits with code 0.
 
 ## Configuration and secrets
 
@@ -86,7 +104,8 @@ node --env-file=.env --enable-source-maps dist/index.js
 
 ```text
 src/
-  index.ts           Startup and configuration validation
+  index.ts           Discord login, ready logging, and shutdown
+  index.test.ts      Offline startup failure checks
   config.ts          Small environment validation function
   config.test.ts     Configuration unit tests
 eslint.config.mjs    ESLint and TypeScript rules
@@ -107,7 +126,7 @@ constraint when upgrading the linter.
 `pnpm-workspace.yaml` records permission for esbuild's install script, needed by
 the `tsx` development tool. It is package-manager configuration for this single
 project; no additional packages or monorepo structure are involved. discord.js
-will be installed with the login milestone, when it is first used.
+is the only direct runtime dependency.
 
 Commit `pnpm-lock.yaml` alongside dependency changes. Generated output,
 dependencies, coverage, local environment files, and AWS credentials are ignored.
@@ -115,9 +134,8 @@ Run `pnpm check` and review `git diff` plus untracked files before committing.
 
 ## Next milestones
 
-1. Add discord.js, login, ready logging, and clean shutdown.
-2. Add pure, tested temporary voice channel decisions.
-3. Connect those decisions to Discord events and channel operations.
+1. Add pure, tested temporary voice channel decisions.
+2. Connect those decisions to Discord events and channel operations.
 
 The planned voice feature uses fixed `Backstage N` names and memory-only tracking
 of channels created by the running bot. It will never use a matching name alone
